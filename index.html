@@ -245,9 +245,17 @@ function genMoves(s){
           const t=s.board[rr][cc];
           if(t && colorOf(t)===opp) add(rr,cc,{capture:true, promotion: rr===promoRow});
         }
+        // En passant (including self-passant for Anarchy Chess)
         if(s.ep){
           const [epr,epc]=fromAlg(s.ep);
-          if(f1r===epr && Math.abs(epc-c)===1) add(epr,epc,{enpassant:true,capture:true});
+          if(f1r===epr && Math.abs(epc-c)===1){
+            // Check if there's a pawn to capture (either color for Anarchy Chess)
+            const captureRow = side==='w' ? epr+1 : epr-1;
+            const targetPawn = s.board[captureRow]?.[epc];
+            if(targetPawn && targetPawn[1]==='P'){
+              add(epr,epc,{enpassant:true,capture:true,selfpassant:colorOf(targetPawn)===side});
+            }
+          }
         }
       } break;
       case 'N': for(const [dr,dc] of DIRS.N) add(r+dr,c+dc); break;
@@ -279,6 +287,37 @@ function genMoves(s){
       } break;
     }
   }
+
+  // Il Vaticano: Two bishops aligned with 2 enemy pawns between them
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    const p1=s.board[r][c];
+    if(!p1 || p1[0]!==side || p1[1]!=='B') continue;
+
+    // Check horizontal (right)
+    if(c+3<8){
+      const p2=s.board[r][c+3];
+      const m1=s.board[r][c+1], m2=s.board[r][c+2];
+      if(p2 && p2[0]===side && p2[1]==='B' &&
+         m1 && m1[0]===opp && m1[1]==='P' &&
+         m2 && m2[0]===opp && m2[1]==='P'){
+        moves.push({from:[r,c], to:[r,c+3], piece:p1, vaticano:true,
+                    bishop2:[r,c+3], captures:[[r,c+1],[r,c+2]]});
+      }
+    }
+
+    // Check vertical (down)
+    if(r+3<8){
+      const p2=s.board[r+3][c];
+      const m1=s.board[r+1][c], m2=s.board[r+2][c];
+      if(p2 && p2[0]===side && p2[1]==='B' &&
+         m1 && m1[0]===opp && m1[1]==='P' &&
+         m2 && m2[0]===opp && m2[1]==='P'){
+        moves.push({from:[r,c], to:[r+3,c], piece:p1, vaticano:true,
+                    bishop2:[r+3,c], captures:[[r+1,c],[r+2,c]]});
+      }
+    }
+  }
+
   const legal=[];
   for(const m of moves){
     const s2 = structuredClone(s);
@@ -307,6 +346,25 @@ function makeMove(s, m, dry=false){
   if(m.enpassant){
     const dir = side==='w'?-1:1;
     b[tr - dir][tc] = null;
+  }
+  if(m.vaticano){
+    // Il Vaticano: Bishops switch places and capture both pawns
+    const [b2r,b2c] = m.bishop2;
+    const bishop1 = b[fr][fc];
+    const bishop2 = b[b2r][b2c];
+    // Capture both pawns
+    for(const [cr,cc] of m.captures){
+      b[cr][cc] = null;
+    }
+    // Switch bishops (from goes to bishop2's position, bishop2 comes to from position)
+    b[fr][fc] = bishop2;
+    b[tr][tc] = bishop1;
+
+    // Update turn
+    s.half++;
+    if(side==='b') s.full++;
+    s.active = opp;
+    return s;
   }
   if(m.castle==='K'){
     const row = side==='w'?7:0;
@@ -366,6 +424,7 @@ function toSAN(prev, m, after){
   };
   if(m.castle==='K') return addCheck('O-O');
   if(m.castle==='Q') return addCheck('O-O-O');
+  if(m.vaticano) return addCheck('IL VATICANO!!');
   let san = '';
   if(m.piece[1]==='P' && m.capture) san += algebraic(m.from[0], m.from[1])[0];
   // disambiguation
