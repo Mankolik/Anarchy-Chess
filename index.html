@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Chess – P2P Web (no server)</title>
+<title>Chess – P2P Web</title>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <style>
   :root { --sq: clamp(42px, 11vw, 76px); --light:#f0d9b5; --dark:#b58863; --hl:#e8f36a; --sel:#7bd3ff; }
   * { box-sizing: border-box }
@@ -74,36 +75,26 @@
 
 <!-- Host dialog -->
 <dialog id="hostDlg" class="modal">
-  <header>Share this offer</header>
+  <header>Your Room Code</header>
   <div class="body">
-    <p>Send this code to your opponent. Then paste their answer below and press <b>Connect</b>.</p>
-    <textarea id="offerOut" rows="6" readonly></textarea>
-    <div class="qr">
-      <img id="offerQR" alt="Offer QR"/>
-      <div class="hint">Tip: On mobile, tap <b>Copy</b> and share via chat. QR works too, but very long codes can be dense.</div>
-    </div>
-    <textarea id="answerIn" rows="6" placeholder="Paste answer here"></textarea>
+    <p>Share this room code with your opponent:</p>
+    <textarea id="roomCode" rows="2" readonly style="font-size:1.5em;text-align:center;font-weight:bold"></textarea>
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button id="copyOfferBtn">Copy</button>
-      <button id="connectBtn">Connect</button>
+      <button id="copyRoomBtn">Copy Code</button>
       <button onclick="hostDlg.close()">Close</button>
     </div>
+    <p class="hint" style="margin-top:12px">Waiting for opponent to join...</p>
   </div>
 </dialog>
 
 <!-- Join dialog -->
 <dialog id="joinDlg" class="modal">
-  <header>Paste host offer</header>
+  <header>Join Room</header>
   <div class="body">
-    <textarea id="offerIn" rows="6" placeholder="Paste offer here"></textarea>
-    <p>Your answer (send this back to host):</p>
-    <textarea id="answerOut" rows="6" readonly></textarea>
-    <div class="qr">
-      <img id="answerQR" alt="Answer QR"/>
-      <div class="hint">The host can scan this QR or you can tap <b>Copy</b> and send it.</div>
-    </div>
-    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button id="copyAnswerBtn">Copy</button>
+    <p>Enter the room code from your opponent:</p>
+    <input type="text" id="roomCodeInput" placeholder="Enter room code" style="width:100%;padding:12px;font-size:1.2em;text-align:center;background:#0f1115;border:1px solid #2b2f36;color:#eaeaea;border-radius:8px;"/>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="joinRoomBtn">Join</button>
       <button onclick="joinDlg.close()">Close</button>
     </div>
   </div>
@@ -132,7 +123,7 @@ function loadFEN(fen){
   let r=0,c=0;
   for(const ch of pieces){
     if(ch==='/'){ r++; c=0; continue; }
-    if(/\\d/.test(ch)){ c += parseInt(ch); continue; }
+    if(/\d/.test(ch)){ c += parseInt(ch); continue; }
     const col = (ch === ch.toUpperCase()) ? 'w' : 'b';
     const type = ch.toUpperCase();
     board[r][c++] = col + type;
@@ -526,9 +517,10 @@ document.getElementById('undoBtn').onclick = ()=>{
 };
 document.getElementById('flipBtn').onclick = ()=>{ flipped=!flipped; draw(); };
 
-/* ---------- P2P WebRTC (manual signaling) ---------- */
-const RTC_CFG = { iceServers: [{urls: 'stun:stun.l.google.com:19302'}] };
-let rtc = { pc:null, dc:null, isHost:false, connected:false };
+/* ---------- P2P with PeerJS ---------- */
+let peer = null;
+let conn = null;
+let rtc = { connected:false };
 let suppressSend = false;
 
 function toUCI(m){
@@ -547,36 +539,47 @@ function moveFromUCI(uci){
   return hit;
 }
 function send(json){
-  if(rtc.dc && rtc.dc.readyState==='open' && !suppressSend){
-    rtc.dc.send(JSON.stringify(json));
+  if(conn && conn.open && !suppressSend){
+    conn.send(json);
   }
 }
-function attachDataChannel(dc){
-  rtc.dc = dc;
-  dc.onopen = ()=>{ rtc.connected=true; draw(); };
-  dc.onclose = ()=>{ rtc.connected=false; draw(); };
-  dc.onerror = ()=>{ statusTag.textContent = 'RTC error'; };
-  dc.onmessage = (ev)=>{
+
+function setupConnection(connection){
+  conn = connection;
+
+  conn.on('open', ()=>{
+    rtc.connected = true;
+    draw();
+    statusTag.textContent = 'Connected';
+    // Sync game state when connection opens
+    send({t:'sync', fen: toFEN(state)});
+  });
+
+  conn.on('data', (data)=>{
     try{
-      const msg = JSON.parse(ev.data);
-      if(msg.t==='move'){
-        const m = moveFromUCI(msg.uci);
+      if(data.t==='move'){
+        const m = moveFromUCI(data.uci);
         if(!m) return;
         suppressSend = true;
         pushAndMove(m);
         suppressSend = false;
-      }else if(msg.t==='sync'){
-        loadFEN(msg.fen);
+      }else if(data.t==='sync'){
+        loadFEN(data.fen);
       }
-    }catch(e){}
-  };
-}
-async function gatherComplete(pc){
-  if(pc.iceGatheringState === 'complete') return;
-  await new Promise(res=>{
-    pc.addEventListener('icegatheringstatechange', ()=> {
-      if(pc.iceGatheringState === 'complete') res();
-    });
+    }catch(e){
+      console.error('Message error:', e);
+    }
+  });
+
+  conn.on('close', ()=>{
+    rtc.connected = false;
+    draw();
+    statusTag.textContent = 'Disconnected';
+  });
+
+  conn.on('error', (err)=>{
+    console.error('Connection error:', err);
+    statusTag.textContent = 'Connection error';
   });
 }
 
@@ -584,70 +587,77 @@ const hostBtn = document.getElementById('hostBtn');
 const joinBtn = document.getElementById('joinBtn');
 const hostDlg = document.getElementById('hostDlg');
 const joinDlg = document.getElementById('joinDlg');
-const offerOut = document.getElementById('offerOut');
-const answerIn = document.getElementById('answerIn');
-const offerIn  = document.getElementById('offerIn');
-const answerOut= document.getElementById('answerOut');
-const offerQR  = document.getElementById('offerQR');
-const answerQR = document.getElementById('answerQR');
+const roomCodeEl = document.getElementById('roomCode');
+const roomCodeInput = document.getElementById('roomCodeInput');
 
-function makeQR(imgEl, text){
-  const payload = encodeURIComponent(text);
-  const size = 300; // px
-  imgEl.src = `https://chart.googleapis.com/chart?cht=qr&chs=${size}x${size}&chld=M|0&chl=${payload}`;
-}
+function hostOnline(){
+  // Create a new peer with a random ID
+  peer = new Peer();
 
-async function hostOnline(){
-  rtc.isHost = true;
-  rtc.pc = new RTCPeerConnection(RTC_CFG);
-  attachDataChannel(rtc.pc.createDataChannel('chess'));
-  rtc.pc.onicecandidate = ()=>{};
-  const offer = await rtc.pc.createOffer();
-  await rtc.pc.setLocalDescription(offer);
-  await gatherComplete(rtc.pc);
-  const blob = btoa(JSON.stringify(rtc.pc.localDescription));
-  offerOut.value = blob;
-  makeQR(offerQR, blob);
-  document.getElementById('copyOfferBtn').onclick = ()=> navigator.clipboard.writeText(offerOut.value);
-  document.getElementById('connectBtn').onclick = async ()=>{
-    try{
-      const ans = JSON.parse(atob(answerIn.value.trim()));
-      await rtc.pc.setRemoteDescription(ans);
-      hostDlg.close();
-      send({t:'sync', fen: toFEN(state)});
-    }catch(e){ alert('Could not parse the answer. Make sure you pasted it fully.'); }
+  peer.on('open', (id)=>{
+    // Show the room code in the dialog
+    roomCodeEl.value = id;
+    statusTag.textContent = 'Waiting...';
+  });
+
+  peer.on('connection', (connection)=>{
+    // When someone joins, set up the connection
+    setupConnection(connection);
+    hostDlg.close();
+  });
+
+  peer.on('error', (err)=>{
+    console.error('Peer error:', err);
+    alert('Connection error: ' + err.type);
+  });
+
+  // Copy button
+  document.getElementById('copyRoomBtn').onclick = ()=>{
+    navigator.clipboard.writeText(roomCodeEl.value);
+    statusTag.textContent = 'Code copied!';
   };
 }
 
-async function joinOnline(offerBlob){
-  rtc.isHost = false;
-  rtc.pc = new RTCPeerConnection(RTC_CFG);
-  rtc.pc.ondatachannel = (ev)=> attachDataChannel(ev.channel);
-  rtc.pc.onicecandidate = ()=>{};
-  try{
-    const offer = JSON.parse(atob(offerBlob));
-    await rtc.pc.setRemoteDescription(offer);
-    const answer = await rtc.pc.createAnswer();
-    await rtc.pc.setLocalDescription(answer);
-    await gatherComplete(rtc.pc);
-    const blob = btoa(JSON.stringify(rtc.pc.localDescription));
-    answerOut.value = blob;
-    makeQR(answerQR, blob);
-    document.getElementById('copyAnswerBtn').onclick = ()=> navigator.clipboard.writeText(answerOut.value);
-  }catch(e){ /* wait for full paste or bad data */ }
+function joinRoom(){
+  const roomCode = roomCodeInput.value.trim();
+  if(!roomCode){
+    alert('Please enter a room code');
+    return;
+  }
+
+  // Create a peer if not already created
+  if(!peer){
+    peer = new Peer();
+
+    peer.on('open', ()=>{
+      // Once peer is ready, connect to the host
+      const connection = peer.connect(roomCode);
+      setupConnection(connection);
+      joinDlg.close();
+    });
+
+    peer.on('error', (err)=>{
+      console.error('Peer error:', err);
+      alert('Could not connect: ' + err.type);
+    });
+  } else {
+    // Peer already exists, just connect
+    const connection = peer.connect(roomCode);
+    setupConnection(connection);
+    joinDlg.close();
+  }
 }
 
 hostBtn.onclick = ()=>{
   hostDlg.showModal();
   hostOnline();
 };
+
 joinBtn.onclick = ()=>{
   joinDlg.showModal();
-  offerIn.oninput = ()=> {
-    const v = offerIn.value.trim();
-    if(v.length>0){ joinOnline(v); }
-  };
 };
+
+document.getElementById('joinRoomBtn').onclick = joinRoom;
 
 /* Hook into pushAndMove to broadcast */
 const _pushAndMove = function(m){
