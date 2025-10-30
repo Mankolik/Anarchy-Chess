@@ -303,6 +303,64 @@ function genMoves(s){
       } break;
     }
   }
+
+  // Vaticannon: When 2 bishops of same color are adjacent, one can launch the other
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    const p=s.board[r][c];
+    if(!p || p[0]!==side || p[1]!=='B') continue;
+
+    // Check for adjacent same-color bishops (anchor)
+    for(const [dr,dc] of DIRS.K){ // Check all 8 adjacent squares
+      const ar=r+dr, ac=c+dc;
+      if(!inb(ar,ac)) continue;
+      const anchor=s.board[ar][ac];
+      if(!anchor || anchor[0]!==side || anchor[1]!=='B') continue;
+
+      // Found adjacent bishop! Current bishop (r,c) can be launched from squares adjacent to anchor
+      for(const [ldr,ldc] of DIRS.K){ // Launch positions around anchor
+        const lr=ar+ldr, lc=ac+ldc;
+        if(!inb(lr,lc)) continue;
+
+        // From launch position, travel in diagonal directions
+        for(const [ddr,ddc] of DIRS.B){
+          let rr=lr+ddr, cc=lc+ddc;
+          const allCaptured=[];
+
+          // Pierce through pieces along diagonal
+          while(inb(rr,cc)){
+            const t=s.board[rr][cc];
+
+            // Collect captured pieces (but don't capture the projectile or anchor)
+            if(t && !(rr===r && cc===c) && !(rr===ar && cc===ac)){
+              allCaptured.push([rr,cc]);
+            }
+
+            // Can land on any square along the path (but not on anchor)
+            if(!(rr===ar && cc===ac)){
+              // Only include captures up to and including the landing square
+              const capturedUpToHere = allCaptured.filter(([cr,cp])=>{
+                // Check if captured piece is between launch and landing square
+                const dist = Math.max(Math.abs(rr-lr), Math.abs(cc-lc));
+                const capDist = Math.max(Math.abs(cr-lr), Math.abs(cp-lc));
+                return capDist <= dist;
+              });
+
+              moves.push({
+                from:[r,c],
+                to:[rr,cc],
+                piece:p,
+                vaticannon:true,
+                capture: capturedUpToHere.length > 0,
+                capturedSquares: capturedUpToHere
+              });
+            }
+            rr+=ddr; cc+=ddc;
+          }
+        }
+      }
+    }
+  }
+
   const legal=[];
   for(const m of moves){
     const s2 = structuredClone(s);
@@ -331,6 +389,12 @@ function makeMove(s, m, dry=false){
   if(m.enpassant || m.ownpassant){
     const dir = side==='w'?-1:1;
     b[tr - dir][tc] = null;
+  }
+  if(m.vaticannon && m.capturedSquares){
+    // Remove all captured pieces along the path
+    for(const [cr,cc] of m.capturedSquares){
+      b[cr][cc] = null;
+    }
   }
   if(m.castle==='K'){
     const row = side==='w'?7:0;
