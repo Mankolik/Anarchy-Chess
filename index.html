@@ -54,6 +54,7 @@
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
       <button id="hostBtn">Host online</button>
       <button id="joinBtn">Join online</button>
+      <button id="leaveBtn" style="display:none;">Leave room</button>
     </div>
     <div style="margin-top:12px;font-weight:600">Moves (SAN)</div>
     <div id="moves" class="moves"></div>
@@ -495,15 +496,25 @@ function draw(){
     }
   }
   turnTag.textContent = 'Turn: ' + (state.active==='w'?'White':'Black');
-  const res = isCheckmate(state) ? 'Checkmate' : isStalemate(state) ? 'Stalemate' : inCheck(state,state.active)? 'Check' : (rtc.connected?'Online':'Ready');
+  const res = isCheckmate(state) ? 'Checkmate' : isStalemate(state) ? 'Stalemate' : inCheck(state,state.active)? 'Check' : (rtc.connected?`Online - You are ${rtc.myColor==='w'?'White':'Black'}`:'Ready');
   statusTag.textContent = res;
   document.getElementById('undoBtn').disabled = rtc.connected; // avoid desyncs online
+
+  // Show/hide online buttons based on connection status
+  document.getElementById('hostBtn').style.display = rtc.connected ? 'none' : 'inline-block';
+  document.getElementById('joinBtn').style.display = rtc.connected ? 'none' : 'inline-block';
+  document.getElementById('leaveBtn').style.display = rtc.connected ? 'inline-block' : 'none';
 }
 
 function onSq(e){
   const r = +e.currentTarget.dataset.r;
   const c = +e.currentTarget.dataset.c;
   const p = state.board[r][c];
+
+  // In online play, only allow moves if it's my color's turn
+  if(rtc.connected && rtc.myColor && state.active !== rtc.myColor){
+    return; // Not my turn
+  }
 
   // No piece selected yet → select if it's the side to move
   if(!sel){
@@ -579,7 +590,7 @@ document.getElementById('flipBtn').onclick = ()=>{ flipped=!flipped; draw(); };
 /* ---------- P2P with PeerJS ---------- */
 let peer = null;
 let conn = null;
-let rtc = { connected:false };
+let rtc = { connected:false, myColor:null }; // myColor = 'w' or 'b'
 let suppressSend = false;
 
 function toUCI(m){
@@ -603,13 +614,32 @@ function send(json){
   }
 }
 
-function setupConnection(connection){
+function leaveRoom(){
+  if(conn && conn.open){
+    send({t:'leave'});
+    conn.close();
+  }
+  if(peer){
+    peer.destroy();
+    peer = null;
+  }
+  conn = null;
+  rtc.connected = false;
+  rtc.myColor = null;
+  draw();
+  statusTag.textContent = 'Left room';
+}
+
+function setupConnection(connection, isHost){
   conn = connection;
+
+  // Host plays white, joiner plays black
+  rtc.myColor = isHost ? 'w' : 'b';
 
   conn.on('open', ()=>{
     rtc.connected = true;
     draw();
-    statusTag.textContent = 'Connected';
+    statusTag.textContent = `Connected - You are ${rtc.myColor==='w'?'White':'Black'}`;
     // Sync game state when connection opens
     send({t:'sync', fen: toFEN(state)});
   });
@@ -624,6 +654,9 @@ function setupConnection(connection){
         suppressSend = false;
       }else if(data.t==='sync'){
         loadFEN(data.fen);
+      }else if(data.t==='leave'){
+        alert('Your opponent has left the game');
+        leaveRoom();
       }
     }catch(e){
       console.error('Message error:', e);
@@ -632,8 +665,9 @@ function setupConnection(connection){
 
   conn.on('close', ()=>{
     rtc.connected = false;
+    rtc.myColor = null;
     draw();
-    statusTag.textContent = 'Disconnected';
+    statusTag.textContent = 'Opponent disconnected';
   });
 
   conn.on('error', (err)=>{
@@ -661,7 +695,7 @@ function hostOnline(){
 
   peer.on('connection', (connection)=>{
     // When someone joins, set up the connection
-    setupConnection(connection);
+    setupConnection(connection, true); // Host = true
     hostDlg.close();
   });
 
@@ -691,7 +725,7 @@ function joinRoom(){
     peer.on('open', ()=>{
       // Once peer is ready, connect to the host
       const connection = peer.connect(roomCode);
-      setupConnection(connection);
+      setupConnection(connection, false); // Joiner = false
       joinDlg.close();
     });
 
@@ -702,7 +736,7 @@ function joinRoom(){
   } else {
     // Peer already exists, just connect
     const connection = peer.connect(roomCode);
-    setupConnection(connection);
+    setupConnection(connection, false); // Joiner = false
     joinDlg.close();
   }
 }
@@ -717,6 +751,7 @@ joinBtn.onclick = ()=>{
 };
 
 document.getElementById('joinRoomBtn').onclick = joinRoom;
+document.getElementById('leaveBtn').onclick = leaveRoom;
 
 /* Hook into pushAndMove to broadcast */
 const _pushAndMove = function(m){
