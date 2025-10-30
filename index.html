@@ -344,13 +344,13 @@ function genMoves(s){
              !squareAttacked(s,row,2,opp) && !squareAttacked(s,row,3,opp))
             moves.push({from:[r,c],to:[row,2],piece:p,castle:'Q'});
         }
-        // La Bastarda
+        // La Bastarda (fixed: move AWAY from queen)
         if(r>0 && r<7){
           for(const [dr,dc] of DIRS.K){
             const qr=r+dr, qc=c+dc; if(!inb(qr,qc)) continue;
             const q=s.board[qr][qc];
             if(q && q[0]===opp && q[1]==='Q'){
-              const tr=r+dr, tc=c+dc; // directly away
+              const tr=r-dr, tc=c-dc; // opposite vector
               if(inb(tr,tc)){
                 const t=s.board[tr][tc];
                 if(!t || colorOf(t)===opp){
