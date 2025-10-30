@@ -258,6 +258,21 @@ function genMoves(s){
           const [epr,epc]=fromAlg(s.ep);
           if(f1r===epr && Math.abs(epc-c)===1) add(epr,epc,{enpassant:true,capture:true});
         }
+        // Own Passant: capture your own pawn by moving diagonally backwards
+        if(s.ep){
+          const [epr,epc]=fromAlg(s.ep);
+          // The pawn that just double-moved is one square ahead from ep square (in movement direction)
+          const doubleMovedRow = epr + dir;
+          const targetPawn = s.board[doubleMovedRow]?.[epc];
+          // Check if the pawn that double-moved is ours (same color)
+          if(targetPawn && colorOf(targetPawn) === side && targetPawn[1] === 'P'){
+            // Check if current pawn is next to the double-moved pawn (same row, adjacent file)
+            if(r === doubleMovedRow && Math.abs(epc - c) === 1){
+              // Can capture by moving diagonally backwards to ep square
+              add(epr, epc, {ownpassant:true, capture:true});
+            }
+          }
+        }
       } break;
       case 'N': for(const [dr,dc] of DIRS.N) add(r+dr,c+dc); break;
       case 'B':
@@ -313,7 +328,7 @@ function makeMove(s, m, dry=false){
 
   const capturedSquare = {r:tr, c:tc};
 
-  if(m.enpassant){
+  if(m.enpassant || m.ownpassant){
     const dir = side==='w'?-1:1;
     b[tr - dir][tc] = null;
   }
